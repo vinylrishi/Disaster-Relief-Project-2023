@@ -1,0 +1,1441 @@
+---
+title: "Disaster_Relief_Project_1"
+author: "Rishi Sharma"
+date: "2023-08-05"
+output: html_document
+---
+```{r warning=FALSE}
+library(ISLR2)
+library(caret)
+library(MASS)
+library(GGally)
+library(tidyverse)
+library(class)
+library(modelr)
+library(leaps)
+library(glmnet)
+library(gridExtra)
+library(boot)
+library(pROC)
+library(ROCR)
+library(e1071)
+library(kernlab)
+```
+
+
+
+
+
+# Data load and preliminary analysis (visuals)  
+
+```{r}
+data <- read.csv('HaitiPixels.csv', header=T)
+data$Class <- as.factor(data$Class)
+```
+
+
+Vegetation and Soil dominate in row count, with over 20,000 each in our ~63,000 row data set.
+```{r}
+data %>% 
+  group_by(Class) %>%
+  ggplot(aes(x = Class)) + 
+  geom_bar() +
+  labs(title = 'Count of Rows for Each Class')
+```
+
+```{r}
+data %>% 
+  group_by(Class) %>%
+  summarize(sum_red = sum(Red), sum_green = sum(Green), sum_blue = sum(Blue), total = sum(Red,Blue,Green))
+```
+
+```{r}
+data %>% 
+  group_by(Class) %>%
+  summarize(PerRed = sum(Red)/sum(Red,Blue,Green)*100, PerGreen = sum(Green)/sum(Red,Blue,Green)*100, PerBlue = sum(Blue)/sum(Red,Blue,Green)*100, total = sum(Red,Blue,Green))
+```
+
+
+Blue Tarps have the highest percentage of Blue colors in their pixels that any other Class. It is distinctly greater than the other classes, which remain relatively close in percentage.  
+
+```{r}
+data %>% 
+  group_by(Class) %>%
+  summarize(PerRed = sum(Red)/sum(Red,Blue,Green)*100, PerGreen = sum(Green)/sum(Red,Blue,Green)*100, PerBlue = sum(Blue)/sum(Red,Blue,Green)*100, total = sum(Red,Blue,Green)) %>% 
+  ggplot(aes(x = Class, y= PerBlue, fill = 'blue')) +
+  geom_bar(stat = 'identity') +
+  scale_fill_manual(values = "blue") +
+  labs(title = 'Percent of Total Intensity That is Blue for each Class', y= "Percent Blue (%)")
+```
+
+Soil has by far the most pixels in the data, meaning it's proportions can overpower the data. We will see if this plays a significant role in model building.
+```{r}
+data %>% 
+  group_by(Class) %>%
+  ggplot(aes(x = Class, fill=Class)) +
+  geom_bar() +
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE))+
+  scale_fill_manual(values = c("Blue Tarp" = "blue","Rooftop"="orange","Soil"="brown", "Various Non-Tarp"= "grey" , "Vegetation"="green")) +
+  labs(title = 'Total Rows in Data for Each Class', y= "Pixels") 
+```
+
+# We care for a Binary result, Blue Tarp or Not Blue Tarp  
+
+Blue Tarps indicate the presence of displaced people, therefore, we want to take a binary approach of all non-tarp classes being one class, while Blue Tarp is its own class. 
+
+```{r}
+data$Displaced <- ifelse(data$Class == 'Blue Tarp', 'Tarp', 'Non_Tarp')
+data$Displaced <- as.factor(data$Displaced)
+```
+
+
+
+As expected, Blue Tarp classified rows have a higher overall percentage of Blue in their total pixels than non-Tarp classifiers. The opposite is true for Red and Green percentage.  
+
+```{r, fig.width=5, fig.height=6}
+PerBluePlot <- data %>% 
+  group_by(Displaced) %>%
+  summarize(PerRed = sum(Red)/sum(Red,Blue,Green)*100, PerGreen = sum(Green)/sum(Red,Blue,Green)*100, PerBlue = sum(Blue)/sum(Red,Blue,Green)*100, total = sum(Red,Blue,Green)) %>% 
+  ggplot(aes(x = Displaced, y= PerBlue, fill = 'blue')) +
+  geom_bar(stat = 'identity') +
+  scale_fill_manual(values = "blue") +
+  labs(title = 'Blue Percent of Total Intensity for Tarp vs. Non-Tarp', y= "Percent Blue (%)")
+
+PerRedPlot <- data %>% 
+  group_by(Displaced) %>%
+  summarize(PerRed = sum(Red)/sum(Red,Blue,Green)*100, PerGreen = sum(Green)/sum(Red,Blue,Green)*100, PerBlue = sum(Blue)/sum(Red,Blue,Green)*100, total = sum(Red,Blue,Green)) %>% 
+  ggplot(aes(x = Displaced, y= PerRed, fill = 'red')) +
+  geom_bar(stat = 'identity') +
+  scale_fill_manual(values = "red") +
+  labs(title = 'Red Percent of Total Intensity for Tarp vs. Non-Tarp', y= "Percent Red (%)")
+
+PerGreenPlot <- data %>% 
+  group_by(Displaced) %>%
+  summarize(PerRed = sum(Red)/sum(Red,Blue,Green)*100, PerGreen = sum(Green)/sum(Red,Blue,Green)*100, PerBlue = sum(Blue)/sum(Red,Blue,Green)*100, total = sum(Red,Blue,Green)) %>% 
+  ggplot(aes(x = Displaced, y= PerGreen, fill = 'green')) +
+  geom_bar(stat = 'identity') +
+  scale_fill_manual(values = "green") +
+  labs(title = 'Green Percent of Total Intensity for Tarp vs. Non-Tarp', y= "Percent Green (%)")
+
+grid.arrange(PerBluePlot, PerRedPlot, PerGreenPlot, nrow = 3, ncol = 1)
+```
+
+```{r}
+data %>% 
+  group_by(Displaced) %>%
+  ggplot(aes(x = Displaced)) + 
+  geom_bar() +
+  labs(title = 'Count of Rows for Tarp vs. Non-Tarp')
+```
+
+Sum of Tarp vs. Non-Tarp Rows
+```{r}
+sum(data$Displaced == 'Tarp')
+sum(data$Displaced == 'Non_Tarp')
+```
+
+
+
+# Logistic Regression Model Build  
+
+## Test various models with interactions/transformations and compare to base model
+```{r}
+log.base <- glm(Displaced ~ Red+Green+Blue, data=data, family = 'binomial')
+log.interactions <- glm(Displaced ~ (Red+Green+Blue)^2, data=data, family = 'binomial')
+```
+
+```{r}
+anova(log.base,log.interactions,test='Chisq')
+```
+
+```{r}
+summary(log.base)
+```
+
+
+```{r}
+summary(log.interactions)
+```
+
+Red:Green and Green:Blue interaction appears to be significant, but at the cost of Red being a significant predictor. Smaller residual deviance and AIC at interaction model.
+
+## Perform 10-fold cross validation on Log interaction model
+```{r}
+set.seed(1)
+trControl <- caret::trainControl(method='cv', number=10, savePredictions = TRUE, classProbs = TRUE)
+log.model <- caret::train(Displaced ~ (Red+Green+Blue)^2, data=data, method='glm', trControl=trControl)
+log.model
+```
+## Get final model result from 10-fold CV
+```{r}
+print(log.model$finalModel)
+```
+
+## Get predicted probabilities of folds
+
+```{r}
+log.preds <- predict(log.model, data, type = "prob")
+```
+
+## ROC Plot for Logistic Regression
+```{r}
+log.predob <- ROCR::prediction(log.preds$Tarp, data$Displaced)
+log.model.roc <- ROCR::performance(log.predob, measure='tpr', x.measure='fpr')
+plot(log.model.roc, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for Logistic Regression')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(data$Displaced, log.preds$Tarp)$auc
+```
+
+## Selecting a threshold  
+
+```{r}
+threshold.stats <- caret::thresholder(log.model,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+threshold.stats$TPR <- threshold.stats$Sensitivity
+threshold.stats$FNR <- 1 - threshold.stats$Sensitivity
+threshold.stats$FPR <- 1 - threshold.stats$Specificity
+```
+
+
+
+```{r}
+threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "TPR", "FPR", "FNR", "Dist", "F1") %>%
+  knitr::kable(digits=3)
+```
+
+
+Peak Accuracy range at 0.55 to 0.75. While the FPR is also slightly higher at 0.65 than 0.75, we are willing to live with this trade off because we would rather incorrectly mark areas as displaced people than miss any people. We want as low of an FNR as possible within the reasonable threshold range (can't just pick 0.05 threshold).  
+
+## Logistic Model Metrics  
+
+Threshold: 0.70  
+Accuracy: 0.996  
+TPR: 0.998  
+FPR: 0.055  
+FNR: 0.002
+AUC: 0.9996  
+
+We have maintained the highest accuracy and a low FNR rate (the most important rate in this case).  
+
+# LDA Model  
+
+```{r}
+lda.base <- lda(Displaced ~ Red+Green+Blue, data=data)
+
+```
+
+
+```{r}
+lda.base
+```
+
+All the variables are highly correlated, so we can include interactions if we want. Similar to what we saw before, Red:Green and Blue:Green depict the highest interaction. For now, let's proceed without any interaction terms given that the assumption of LDA is a linear relationship.
+
+```{r}
+data %>% 
+  ggcorr(label=TRUE)
+```
+
+
+```{r}
+plot(data$Red,data$Green, main = 'Correlation between Red and Green predictors', xlab= 'Red', ylab ='Green')
+```
+
+```{r}
+plot(data$Blue,data$Green, main = 'Correlation between Blue and Green predictors', xlab= 'Blue', ylab ='Green')
+```
+
+```{r}
+plot(data$Red,data$Blue, main = 'Correlation between Red and Blue predictors', xlab= 'Red', ylab ='Blue')
+```
+
+## Perform 10 fold CV on LDA model
+```{r}
+set.seed(1)
+lda.model <- caret::train(Displaced ~ Red+Green+Blue, data=data, method='lda', trControl=trControl)
+lda.model
+```
+
+## Get final model result from 10-fold CV
+```{r}
+print(lda.model$finalModel)
+```
+
+## Get predicted probabilities of folds
+
+```{r}
+lda.preds <- predict(lda.model, data, type = "prob")
+```
+
+## ROC Plot for LDA Regression
+```{r}
+lda.predob <- ROCR::prediction(lda.preds$Tarp, data$Displaced)
+lda.model.roc <- ROCR::performance(lda.predob, measure='tpr', x.measure='fpr')
+plot(lda.model.roc, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for LDA RGB Model')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(data$Displaced, lda.preds$Tarp)$auc
+```
+
+## Selecting a threshold  
+
+```{r}
+lda.threshold.stats <- caret::thresholder(lda.model,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+lda.threshold.stats$TPR <- lda.threshold.stats$Sensitivity
+lda.threshold.stats$FNR <- 1 - lda.threshold.stats$Sensitivity
+lda.threshold.stats$FPR <- 1 - lda.threshold.stats$Specificity
+```
+
+
+
+```{r}
+lda.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "TPR", "FPR", "FNR", "Dist", "F1") %>%
+  knitr::kable(digits=3)
+```
+
+
+Generally, the Accuracy of LDA is lower than that of Log Regression. Once again, we will select our threshold with the idea that missing any displaced persons is very bad, but we need to stay in a reasonable range above 0.50. 0.65 appears to be a sweet spot of relatively high Accuracy (0.984).  
+
+## LDA Model Metrics  
+
+Threshold: 0.65  
+Accuracy: 0.984  
+TPR: 0.989 
+FPR: 0.185 
+FNR: 0.011
+AUC: 0.9889  
+
+This is, overall, a worse performance than the Logistic Regression. The 1.1% FNR is noticeably a problem given that we don't want to miss any Tarps.  
+
+
+# QDA Model  
+
+We do need to keep in mind that, for interactions, group means are much higher given the multiplication between value across predictors. Let's use CV to determine if Accuracy improves with interactions.
+
+```{r}
+qda.base <- qda(Displaced ~ Red+Green+Blue, data=data)
+qda.interactions <- qda(Displaced ~ (Red+Green+Blue)^2, data=data)
+```
+
+
+```{r}
+qda.base
+```
+```{r}
+qda.interactions
+```
+
+
+## Perform 10 fold CV on QDA model
+```{r}
+set.seed(1)
+qda.model <- caret::train(Displaced ~ Red+Green+Blue, data=data, method='qda', trControl=trControl)
+qda.model
+```
+```{r}
+caret::train(Displaced ~ (Red+Green+Blue)^2, data=data, method='qda', trControl=trControl)
+```
+
+
+Accuracy takes a one percent hit when using interactions. This is fairly significant, especially when we lives are involved in any error rate.  
+We will proceed with the no interactions model, as it has a relatively high accuracy of 99.46%.  
+
+## Get final model result from 10-fold CV
+```{r}
+print(qda.model$finalModel)
+```
+
+## Get predicted probabilities of folds
+
+```{r}
+qda.preds <- predict(qda.model, data, type = "prob")
+```
+
+## ROC Plot for QDA Regression
+```{r}
+qda.predob <- ROCR::prediction(qda.preds$Tarp, data$Displaced)
+qda.model.roc <- ROCR::performance(qda.predob, measure='tpr', x.measure='fpr')
+plot(qda.model.roc, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for QDA RGB Model')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(data$Displaced, qda.preds$Tarp)$auc
+```
+
+## Selecting a threshold  
+
+```{r}
+qda.threshold.stats <- caret::thresholder(qda.model,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+qda.threshold.stats$TPR <- qda.threshold.stats$Sensitivity
+qda.threshold.stats$FNR <- 1 - qda.threshold.stats$Sensitivity
+qda.threshold.stats$FPR <- 1 - qda.threshold.stats$Specificity
+```
+
+
+
+```{r}
+qda.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "TPR", "FPR", "FNR", "Dist", "F1") %>%
+  knitr::kable(digits=3)
+```
+
+
+The Accuracy of QDA is similar to that of Logistic Regression (both being better than LDA). However, there is a trade-off between in TPR, FPR, and FPR. We can achieve a 0% FNR at a threshold of 0.60 for prediction probabilities. The cost here is an increase in FPR, over double that of logistic regression. Essentially, more things are being incorrectly classified as Tarps, but this also means no Tarps are missed. This creates an ethical issue of whether the increased effort of checking all the extra FPR images is worth the 0.2% FNR of displaced individuals that may be missed. From a model building perspective, Logistic Regression makes more sense. We want a model that works efficiently in finding as many displaced individuals as possible. If we really wanted to miss no single person, we wouldn't use predictive models and would just use brute force search and rescue, for which a time cost would jeopardize many survivors as is. This is a bit of a snowball argument, so let's move on to the next regression model.  
+
+
+## QDA Model Metrics  
+
+Threshold: 0.60  
+Accuracy: 0.995  
+TPR: 1.00 
+FPR: 0.152 
+FNR: 0.000
+AUC: 0.9982  
+
+
+# Transform RGB model to an HSV model
+
+```{r}
+rgb_df <- data[,2:4]
+hsv_df <- rgb2hsv(rgb_df$Red, rgb_df$Green, rgb_df$Blue)
+hsv_df <- as.data.frame(t(hsv_df))
+colnames(hsv_df) <- c("hue", "saturation", "value")
+hsv_df$Displaced <- data$Displaced
+```
+
+
+
+```{r}
+hsv_df %>% 
+  ggcorr(label=TRUE)
+```
+
+
+```{r}
+summary(glm(Displaced ~ ., data=hsv_df, family = 'binomial'))
+```
+
+```{r}
+set.seed(1)
+log.hsv <- caret::train(Displaced ~ ., data=hsv_df, method='glm', trControl=trControl)
+log.hsv
+```
+
+```{r}
+print(log.hsv$finalModel)
+```
+
+## Get predicted probabilities of folds
+
+```{r}
+loghsv.preds <- predict(log.hsv, hsv_df, type = "prob")
+```
+
+## ROC Plot for Logistic Regression
+```{r}
+loghsv.predob <- ROCR::prediction(loghsv.preds$Tarp, hsv_df$Displaced)
+loghsv.model.roc <- ROCR::performance(loghsv.predob, measure='tpr', x.measure='fpr')
+plot(loghsv.model.roc, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for Logistic Regression (HSV)')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(hsv_df$Displaced, loghsv.preds$Tarp)$auc
+```
+
+## Selecting a threshold  
+
+```{r}
+loghsv.threshold.stats <- caret::thresholder(log.hsv,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+loghsv.threshold.stats$TPR <- loghsv.threshold.stats$Sensitivity
+loghsv.threshold.stats$FNR <- 1 - loghsv.threshold.stats$Sensitivity
+loghsv.threshold.stats$FPR <- 1 - loghsv.threshold.stats$Specificity
+```
+
+
+
+```{r}
+loghsv.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "TPR", "FPR", "FNR", "Dist", "F1") %>%
+  knitr::kable(digits=3)
+```
+
+
+## HSV model LDA Regression Results  
+
+Logistic regression works better with RGB numeric color model and interactions included. Let's try HSV on LDA and QDA.  
+
+
+
+# LDA with HSV data set  
+
+```{r}
+set.seed(1)
+lda.hsv <- caret::train(Displaced ~ ., data=hsv_df, method='lda', trControl=trControl)
+lda.hsv
+```
+
+```{r}
+print(lda.hsv$finalModel)
+```
+
+## Get predicted probabilities of folds
+
+```{r}
+ldahsv.preds <- predict(lda.hsv, hsv_df, type = "prob")
+```
+
+## ROC Plot for LDA Regression
+```{r}
+ldahsv.predob <- ROCR::prediction(ldahsv.preds$Tarp, hsv_df$Displaced)
+ldahsv.model.roc <- ROCR::performance(ldahsv.predob, measure='tpr', x.measure='fpr')
+plot(ldahsv.model.roc, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for LDA (HSV)')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(hsv_df$Displaced, ldahsv.preds$Tarp)$auc
+```
+
+## Selecting a threshold  
+
+```{r}
+ldahsv.threshold.stats <- caret::thresholder(lda.hsv,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+ldahsv.threshold.stats$TPR <- ldahsv.threshold.stats$Sensitivity
+ldahsv.threshold.stats$FNR <- 1 - ldahsv.threshold.stats$Sensitivity
+ldahsv.threshold.stats$FPR <- 1 - ldahsv.threshold.stats$Specificity
+```
+
+
+
+```{r}
+ldahsv.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "TPR", "FPR", "FNR", "Dist", "F1") %>%
+  knitr::kable(digits=3)
+```
+
+
+## HSV model LDA Regression Results  
+
+LDA performs much better with an HSV transformation than the RGB color model. Accuracy, TPR, FPR, and FNR are improved to be comparable to the optimal Logistic regression and QDA models. The AUC does take a significant hit, but the focal metrics to determine if we have accurately captured displaced peoples have improved.  
+
+Threshold: 0.60  
+Accuracy: 0.994  
+TPR: 0.995 
+FPR: 0.063 
+FNR: 0.004
+AUC: 0.9527  
+
+
+
+# QDA with HSV data set  
+
+Let's compare HSV color model to RGB color model of QDA with no interactions.
+
+```{r}
+set.seed(1)
+qda.hsv <- caret::train(Displaced ~ ., data=hsv_df, method='qda', trControl=trControl)
+qda.hsv
+```
+
+```{r}
+print(qda.hsv$finalModel)
+```
+
+## Get predicted probabilities of folds
+
+```{r}
+qdahsv.preds <- predict(qda.hsv, hsv_df, type = "prob")
+```
+
+## ROC Plot for QDA Regression
+```{r}
+qdahsv.predob <- ROCR::prediction(qdahsv.preds$Tarp, hsv_df$Displaced)
+qdahsv.model.roc <- ROCR::performance(qdahsv.predob, measure='tpr', x.measure='fpr')
+plot(qdahsv.model.roc, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0),main = 'ROC Plot for QDA (HSV)')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(hsv_df$Displaced, qdahsv.preds$Tarp)$auc
+```
+
+## Selecting a threshold  
+
+```{r}
+qdahsv.threshold.stats <- caret::thresholder(qda.hsv,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+qdahsv.threshold.stats$TPR <- qdahsv.threshold.stats$Sensitivity
+qdahsv.threshold.stats$FNR <- 1 - qdahsv.threshold.stats$Sensitivity
+qdahsv.threshold.stats$FPR <- 1 - qdahsv.threshold.stats$Specificity
+```
+
+
+
+```{r}
+qdahsv.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "TPR", "FPR", "FNR", "Dist", "F1") %>%
+  knitr::kable(digits=3)
+```
+
+
+## HSV model QDA Regression Results  
+
+When comparing to RGB color model QDA regression, the HSV approach allows for a far higher threshold (around 0.80) without sacrificing Accuracy or FNR. While the FNR is slightly higher, The FPR is less than half of the RGB approach. This once again brings up the dilemma of the desired solution. We want the lowest FNR possible, but within reasonable means of search. A low FPR allows for more efficient search, as we have less incorrect locations to check. We will use the HSV transformation for the optimal QDA for now. Either way, the Logistic RGB color model is still the best option so far.   
+
+Threshold: 0.80  
+Accuracy: 0.993  
+TPR: 0.995 
+FPR: 0.054 
+FNR: 0.005
+AUC: 0.9892  
+
+
+# KNN  
+
+For KNN, we will need to test 2 different color models, RGB and HSV. We want to avoid interactions for now because they will result in group means that are far higher than the individual predictor value ranges. We should also test many K-values. Let's check a range of 3 to 30. (A K of 1 or 2 will likely overtrain the data).
+
+```{r}
+set.seed(1)
+caret::train(Displaced ~ Red+Green+Blue, data=data, method='knn', trControl=trControl, tuneGrid = data.frame(k = 3:30))
+```
+
+The best case K value using the RGB color model is k=5. The accuracy is fairly high at 99.728%.  
+
+```{r}
+set.seed(1)
+knn.hsv<-caret::train(Displaced ~ ., data=hsv_df, method='knn', trControl=trControl, tuneGrid = data.frame(k = 3:30))
+```
+
+
+```{r}
+knn.hsv
+```
+
+
+Using an HSV transformation improves the Accuracy very slightly, up to 99.731% at the ideal K of k=14.  
+
+Let's proceed with the HSV KNN model.  
+
+
+```{r}
+print(knn.hsv$finalModel)
+```
+
+## Get predicted probabilities of folds
+
+```{r}
+knnhsv.preds <- predict(knn.hsv, hsv_df, type = "prob")
+```
+
+## ROC Plot for KNN Regression
+```{r}
+knnhsv.predob <- ROCR::prediction(knnhsv.preds$Tarp, hsv_df$Displaced)
+knnhsv.model.roc <- ROCR::performance(knnhsv.predob, measure='tpr', x.measure='fpr')
+plot(knnhsv.model.roc, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for KNN (HSV)')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(hsv_df$Displaced, knnhsv.preds$Tarp)$auc
+```
+
+## Selecting a threshold  
+
+```{r}
+knnhsv.threshold.stats <- caret::thresholder(knn.hsv,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+knnhsv.threshold.stats$TPR <- knnhsv.threshold.stats$Sensitivity
+knnhsv.threshold.stats$FNR <- 1 - knnhsv.threshold.stats$Sensitivity
+knnhsv.threshold.stats$FPR <- 1 - knnhsv.threshold.stats$Specificity
+```
+
+
+
+```{r}
+knnhsv.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "TPR", "FPR", "FNR", "Dist", "F1") %>%
+  knitr::kable(digits=3)
+```
+
+# HSV model for KNN Regression  
+
+The performance of KNN on HSV color model is the best so far. It has equivalent FNR and Accuracy to the optimal logistic model, but with half the FPR. At k=14, this model has the best fit so far on training data. The only downside is the real possibility of overtraining that comes with this flexible of a model.
+
+Threshold: 0.70  
+Accuracy: 0.997  
+TPR: 0.998 
+FPR: 0.024 
+FNR: 0.002
+AUC: 0.9998  
+
+# Penalized Logistic Regression  
+
+Let's try an Elastic model for penalized regression. We will use the optimal logistic regression that uses RGB color model and interactions.  
+
+```{r}
+lambdas <- 10^seq(-5,2,length=20) 
+tuneGrid <- expand.grid(alpha=0.5, 
+                        lambda=lambdas)
+
+pen.trControl <- caret::trainControl(method='cv', number=10, allowParallel=TRUE, savePredictions = TRUE, classProbs = TRUE)
+pen.model <- train(Displaced ~ (Red+Green+Blue)^2, 
+                  data=data, 
+                  method='glmnet', 
+                  trControl=pen.trControl, 
+                  tuneGrid=tuneGrid)
+
+pen.model
+```
+Accuracy increases as we lower lambda to almost zero. This seems to indicate that a penalized regression will not work out better than normal logistic regression on RGB color model. Removing interactions also seems to favor an extremely small lambda of nearly zero.  
+
+
+As a result, we should look to use HSV data to see if a penalized approach will work out best or not.
+
+```{r}
+pen.hsv <- train(Displaced ~ ., 
+                  data=hsv_df, 
+                  method='glmnet', 
+                  trControl=pen.trControl, 
+                  tuneGrid=tuneGrid)
+
+pen.hsv
+```
+
+It appears a small lambda of 0.0016 seems to be the ideal value for Accuracy in the HSV color model. Overall, a penalized approach doesn't seem useful, but we will proceed for results nonetheless.  
+
+```{r}
+penhsv.preds <- predict(pen.hsv, hsv_df, type = "prob")
+```
+
+## ROC Plot for Pen Regression
+```{r}
+penhsv.predob <- ROCR::prediction(penhsv.preds$Tarp, hsv_df$Displaced)
+penhsv.model.roc <- ROCR::performance(penhsv.predob, measure='tpr', x.measure='fpr')
+plot(penhsv.model.roc, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for Penalized Logistic Regression (HSV)')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(hsv_df$Displaced, penhsv.preds$Tarp)$auc
+```
+
+## Selecting a threshold  
+
+```{r}
+penhsv.threshold.stats <- caret::thresholder(pen.hsv,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+penhsv.threshold.stats$TPR <- penhsv.threshold.stats$Sensitivity
+penhsv.threshold.stats$FNR <- 1 - penhsv.threshold.stats$Sensitivity
+penhsv.threshold.stats$FPR <- 1 - penhsv.threshold.stats$Specificity
+```
+
+
+
+```{r}
+penhsv.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "TPR", "FPR", "FNR", "Dist", "F1") %>%
+  knitr::kable(digits=3)
+```
+
+# HSV model for Penalized Logistic Regression  
+
+Penalized models for this data set seem to favor very small lambda values, or just no penalty at all. A small lambda penalty of .0016 seems to improve performance of an HSV logistic model by a   negligible amount. Overall, it appears best to avoid a penalized model.  
+
+Threshold: 0.80  
+Accuracy: 0.994  
+TPR: 0.996 
+FPR: 0.064 
+FNR: 0.004
+AUC: 0.9741  
+Lambda: .0016
+
+
+
+# Random Forest  
+
+We will once again test the two different color models for the training data to test random forest.
+
+```{r}
+set.seed(1)
+rf.rgb <- caret::train(Displaced ~ Red+Green+Blue, data=data, method='rf', trControl=trControl, tuneGrid = data.frame(mtry = 1:3))
+```
+
+```{r}
+rf.rgb
+```
+
+
+```{r}
+rf.rgb$finalModel
+```
+
+
+We only have 3 predictors, so mtry can be 3 at most. we can have 1, 2, or 3 predictors tested at each split in the tree. Results for an RGB color model indicate that using one predictor at each split is best. The results are quite good at 99.69%. The only issue is that there is a high chance of overfitting at mtry=1.  
+
+Let's test the random Forest for the HSV model.  
+
+
+```{r}
+set.seed(1)
+rf.hsv <- caret::train(Displaced ~ ., data=hsv_df, method='rf', trControl=trControl, tuneGrid = data.frame(mtry = 1:3))
+```
+
+
+```{r}
+rf.hsv
+```
+
+
+Using an HSV transformation slightly raises Accuracy, but also has a best mtry of 1, which is also likely to lead to overfitting. Let's use HSV model for now. The models don't differ significantly, so it's really up to us which to use.  
+
+
+
+```{r}
+print(rf.hsv$finalModel)
+```
+
+## Get predicted probabilities of folds
+
+```{r}
+rfhsv.preds <- predict(rf.hsv, hsv_df, type = "prob")
+```
+
+## ROC Plot for Random Forest
+```{r}
+rfhsv.predob <- ROCR::prediction(rfhsv.preds$Tarp, hsv_df$Displaced)
+rfhsv.model.roc <- ROCR::performance(rfhsv.predob, measure='tpr', x.measure='fpr')
+plot(rfhsv.model.roc, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for Random Forest (HSV)')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(hsv_df$Displaced, rfhsv.preds$Tarp)$auc
+```
+
+## Selecting a threshold  
+
+```{r}
+rfhsv.threshold.stats <- caret::thresholder(rf.hsv,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+rfhsv.threshold.stats$TPR <- rfhsv.threshold.stats$Sensitivity
+rfhsv.threshold.stats$FNR <- 1 - rfhsv.threshold.stats$Sensitivity
+rfhsv.threshold.stats$FPR <- 1 - rfhsv.threshold.stats$Specificity
+```
+
+
+
+```{r}
+rfhsv.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "TPR", "FPR", "FNR", "Dist", "F1") %>%
+  knitr::kable(digits=3)
+```
+
+
+# HSV Model for Random Forest  
+
+The Random Forest performs very strongly, with better FPR and matching FNR to the best Log Regression model. The FPR is very close, but slightly under that of KNN. This model rivals KNN for best overall performance, depending on how they each perform on the holdout set.
+
+Threshold: 0.75 
+Accuracy: 0.997  
+TPR: 0.998 
+FPR: 0.025  
+FNR: 0.002
+AUC: 0.9945  
+mtry: 1  
+
+# Support Vector Machine   
+
+## Linear
+```{r}
+cost_vals <- 10^seq(-1,3,length=5)
+set.seed(1) 
+lin.svm<-tune(svm, Displaced ~ Red+Green+Blue, data=data, kernel="linear", ranges=list(cost=cost_vals))
+summary(lin.svm)
+```
+High cost (1000) is best for a linear SVM. Error is .0046.
+
+
+## Radial 
+```{r}
+gamma_vals=c(0.1,1,5,10,50)
+set.seed(1) 
+rad.svm<-tune(svm, Displaced ~ Red+Green+Blue, data=data, kernel="radial", ranges=list(cost=cost_vals, gamma = gamma_vals))
+summary(rad.svm)
+```
+
+strong performance from Radial in terms of error. Gamma=5 and cost of 100, error is 0.00259
+
+## Polynomial
+```{r}
+degree_vals=c(0.5,2,3,4)
+set.seed(1) 
+poly.svm<-tune(svm, Displaced ~ Red+Green+Blue, data=data, kernel="polynomial", ranges=list(cost=cost_vals, degree = degree_vals))
+summary(poly.svm)
+```
+
+Poor performance from best Polynomial overall (Cost = 1000, degree = 3, error .0042) compared to radial. Performs better than linear.  
+
+Radial has performed the best, so test an HSV radial model as well.
+
+# HSV Radial
+
+A radial HSV model was too computationally taxing to be completed. We must proceed with Radial RGB model.  
+
+```{r}
+lin.svm$best.model
+```
+
+```{r}
+poly.svm$best.model
+```
+
+
+
+```{r}
+print(rad.svm$best.model)
+```
+
+
+# Get best svm model
+```{r}
+set.seed(1)
+rad.mod <- caret::train(Displaced ~ Red+Green+Blue, data=data, method='svmRadial', trControl=trControl, tuneGrid = data.frame(C = 100, sigma = 5))
+#rad.mod <- svm(Displaced ~ Red+Green+Blue, data=data, kernel="radial", cost = 100, gamma = 5, decision.values = TRUE, probability = TRUE)
+```
+
+## Get predicted probabilities of folds  
+
+```{r}
+rad.preds <- predict(rad.mod, data, type = 'prob')
+```
+
+
+
+## ROC Plot for SVM
+```{r}
+rad.predob <- ROCR::prediction(rad.preds$Tarp, data$Displaced)
+rad.model.roc <- ROCR::performance(rad.predob, measure='tpr', x.measure='fpr')
+plot(rad.model.roc, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for RGB Radial SVM')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(data$Displaced, rad.preds$Tarp)$auc
+```
+
+## Selecting a threshold  
+
+```{r}
+rad.threshold.stats <- caret::thresholder(rad.mod,
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+rad.threshold.stats$TPR <- rad.threshold.stats$Sensitivity
+rad.threshold.stats$FNR <- 1 - rad.threshold.stats$Sensitivity
+rad.threshold.stats$FPR <- 1 - rad.threshold.stats$Specificity
+```
+
+
+
+```{r}
+rad.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "TPR", "FPR", "FNR", "Dist", "F1") %>%
+  knitr::kable(digits=3)
+```
+
+
+# RGB model Radial SVM  
+
+The Radial SVM at gamma =5 and cost = 100 creates 404 support vectors. The results are very strong and rival for the best performance on training data.  
+
+
+Threshold: 0.80  
+Accuracy: 0.997  
+TPR: 0.998 
+FPR: 0.024
+FNR: 0.002
+AUC: 0.9997 
+gamma: 5
+cost = 100
+Support Vectors used: 404
+
+
+# Creating the Holdout Set  
+
+```{r}
+col_names <- c("ID", "X", "Y", "Map_X", "Map_Y", "Lat", "Lon", "Red", "Green", "Blue")
+```
+
+
+## Tarp Data import
+```{r}
+tarp67 <- read.table('orthovnir067_ROI_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+tarp67$Displaced <- 'Tarp'
+```
+
+```{r}
+tarp69 <- read.table('orthovnir069_ROI_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+tarp69$Displaced <- 'Tarp'
+```
+
+```{r}
+tarp78 <- read.table('orthovnir078_ROI_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+tarp78$Displaced <- 'Tarp'
+```
+
+## No Tarps Data import
+```{r}
+notarp67 <- read.table('orthovnir067_ROI_NOT_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+notarp67$Displaced <- 'Non_Tarp'
+```
+
+
+```{r}
+notarp69 <- read.table('orthovnir069_ROI_NOT_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+notarp69$Displaced <- 'Non_Tarp'
+```
+
+```{r}
+notarp78 <- read.table('orthovnir078_ROI_NON_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+notarp78$Displaced <- 'Non_Tarp'
+```
+
+```{r}
+notarp57 <- read.table('orthovnir057_ROI_NON_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+notarp57$Displaced <- 'Non_Tarp'
+```
+
+
+## Create holdout set
+```{r}
+holdout <- rbind(tarp67, notarp67, tarp69, notarp69, tarp78, notarp78, notarp57)
+```
+
+```{r}
+holdout <- select(holdout,c(Red, Blue, Green, Displaced))
+```
+
+```{r}
+holdout$Displaced <- as.factor(holdout$Displaced)
+```
+
+
+# Create hsv holdout set
+```{r}
+rgb_holdout <- holdout[,1:3]
+hsv_holdout <- rgb2hsv(rgb_holdout$Red, rgb_holdout$Green, rgb_holdout$Blue)
+hsv_holdout <- as.data.frame(t(hsv_holdout))
+colnames(hsv_holdout) <- c("hue", "saturation", "value")
+hsv_holdout$Displaced <- holdout$Displaced
+```
+
+```{r}
+mean(tarp69$Red)
+mean(tarp69$Green)
+mean(tarp69$Blue)
+```
+
+
+
+# Test Holdout Sets on best model for each method (Total 7 methods)  
+
+Note: We will need to reduce number of points used for ROC curves
+
+## Logistic Regression RGB w/ Interactions Model: Holdout test  
+
+
+```{r}
+log.predh <- predict(log.model, holdout, type = "prob")
+```
+
+## ROC Plot for Logistic Regression on Holdout Set
+```{r}
+log.predobh <- ROCR::prediction(log.predh$Tarp, holdout$Displaced)
+log.model.roc.hold <- ROCR::performance(log.predobh, measure='tpr', x.measure='fpr')
+plot(log.model.roc.hold, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0),downsampling = .001, main = 'ROC Plot for Logistic Regression on Holdout Set')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(holdout$Displaced, log.predh$Tarp)$auc
+```
+
+
+## Get confusion matrix with threhold of .70 
+
+```{r}
+log.predictiedvals <- ifelse(log.predh$Tarp >= .70, 'Tarp', 'Non_Tarp')
+confusionMatrix(factor(log.predictiedvals), factor(holdout$Displaced))
+```
+
+The Logistic Regression model chosen through training has performed fairly well with overall Accuracy at 99.69%
+
+Threshold: 0.70 
+Accuracy: 0.9969 
+TPR: 0.997
+FPR: 0.023  
+FNR: 0.003
+AUC: 0.9996 
+
+
+
+## LDA HSV: Holdout test  
+
+
+```{r}
+lda.predh <- predict(lda.hsv, hsv_holdout, type = "prob")
+```
+
+## ROC Plot for LDA HSV on Holdout Set
+```{r}
+lda.predobh <- ROCR::prediction(lda.predh$Tarp, hsv_holdout$Displaced)
+lda.model.roc.hold <- ROCR::performance(lda.predobh, measure='tpr', x.measure='fpr')
+plot(lda.model.roc.hold, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), downsampling = .001, main = 'ROC Plot for LDA HSV on Holdout Set')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(hsv_holdout$Displaced, lda.predh$Tarp)$auc
+```
+
+
+## Get confusion matrix with threhold of .60 
+
+```{r}
+lda.predictiedvals <- ifelse(lda.predh$Tarp >= .60, 'Tarp', 'Non_Tarp')
+confusionMatrix(factor(lda.predictiedvals), factor(hsv_holdout$Displaced))
+```
+
+The LDA HSV model performs far worse than the Logistic model. This is in line with training results as well. 
+
+Threshold: 0.60 
+Accuracy: 0.9829  
+TPR: 0.9828
+FPR: 0.0075 
+FNR: 0.017
+AUC: 0.9849  
+
+## QDA HSV: Holdout test  
+
+
+```{r}
+qda.predh <- predict(qda.hsv, hsv_holdout, type = "prob")
+```
+
+## ROC Plot for QDA HSV on Holdout Set
+```{r}
+qda.predobh <- ROCR::prediction(qda.predh$Tarp, hsv_holdout$Displaced)
+qda.model.roc.hold <- ROCR::performance(qda.predobh, measure='tpr', x.measure='fpr')
+plot(qda.model.roc.hold, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), downsampling = .001, main = 'ROC Plot for QDA HSV on Holdout Set')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(hsv_holdout$Displaced, qda.predh$Tarp)$auc
+```
+
+
+## Get confusion matrix with threhold of .80 
+
+```{r}
+qda.predictedvals <- ifelse(qda.predh$Tarp >= .80, 'Tarp', 'Non_Tarp')
+confusionMatrix(factor(qda.predictedvals), factor(hsv_holdout$Displaced))
+```
+
+The QDA HSV model is sightly worse than the LDA in terms of holdout performance.  
+
+Threshold: 0.80 
+Accuracy: 0.9826  
+TPR: 0.9825
+FPR: 0.0064 
+FNR: 0.0175
+AUC: 0.9895  
+
+
+
+
+
+
+## KNN HSV: Holdout test  
+
+
+```{r}
+knn.predh <- predict(knn.hsv, hsv_holdout, type = "prob")
+```
+
+## ROC Plot for Logistic Regression on Holdout Set
+```{r}
+knn.predobh <- ROCR::prediction(knn.predh$Tarp, hsv_holdout$Displaced)
+knn.model.roc.hold <- ROCR::performance(knn.predobh, measure='tpr', x.measure='fpr')
+plot(knn.model.roc.hold, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for KNN HSV on Holdout Set')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(hsv_holdout$Displaced, knn.predh$Tarp)$auc
+```
+
+## Get confusion matrix with threhold of .70 
+
+```{r}
+knn.predictedvals <- ifelse(knn.predh$Tarp >= .70, 'Tarp', 'Non_Tarp')
+confusionMatrix(factor(knn.predictedvals), factor(hsv_holdout$Displaced))
+```
+
+KNN has performed relatively well, although, surprisingly, Logsitic Regression is now far in the lead in terms of performance on holdout data.  
+
+
+Threshold: 0.70 
+Accuracy: 0.9924 
+TPR: 0.9926
+FPR: 0.0374
+FNR: 0.0074
+AUC: 0.9976
+k = 14
+
+
+## Penalized Log Regression  Holdout test
+```{r}
+penhsv.predh <- predict(pen.hsv, hsv_holdout, type = "prob")
+```
+
+## ROC Plot for Pen Regression
+```{r}
+penhsv.predobh <- ROCR::prediction(penhsv.predh$Tarp, hsv_holdout$Displaced)
+penhsv.model.roc.hold <- ROCR::performance(penhsv.predobh, measure='tpr', x.measure='fpr')
+plot(penhsv.model.roc.hold, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0),downsampling = .001, main = 'ROC Plot for Penalized Logistic Regression on Holdout Set')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+```{r}
+pen.predictiedvals <- ifelse(penhsv.predh$Tarp >= .80, 'Tarp', 'Non_Tarp')
+confusionMatrix(factor(pen.predictiedvals), factor(hsv_holdout$Displaced))
+```
+
+
+## Random Forest HSV: Holdout test  
+
+
+```{r}
+rf.predh <- predict(rf.hsv, hsv_holdout, type = "prob")
+```
+
+## ROC Plot for RF HSV on Holdout Set
+```{r}
+rf.predobh <- ROCR::prediction(rf.predh$Tarp, hsv_holdout$Displaced)
+rf.model.roc.hold <- ROCR::performance(rf.predobh, measure='tpr', x.measure='fpr')
+plot(rf.model.roc.hold, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for Random Forest HSV on Holdout Set')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(hsv_holdout$Displaced, rf.predh$Tarp)$auc
+```
+
+
+## Get confusion matrix with threhold of .75 
+
+```{r}
+rf.predictedvals <- ifelse(rf.predh$Tarp >= .75, 'Tarp', 'Non_Tarp')
+confusionMatrix(factor(rf.predictedvals), factor(hsv_holdout$Displaced))
+```
+
+The Random Forest HSV model seems accurate on the surface, but has a major flaw in the FPR. Random forest has an FPR of over 60%. It seems to marking many non-tarps as tarps. While this means almost all tarps are captures, it also points to a lot of wasted effor in checking the False Positive locations. We can't have a "check everything" approach for the search.  
+
+
+Threshold: 0.75 
+Accuracy: 0.9934 
+TPR: 0.9979
+FPR: 0.6295 
+FNR: 0.0021
+AUC: 0.9903
+mtry = 1
+
+
+
+
+## Radial SVM: Holdout test
+
+```{r}
+rad.predh <- predict(rad.mod, holdout, type = "prob")
+```
+
+## ROC Plot for RF HSV on Holdout Set
+```{r}
+rad.predobh <- ROCR::prediction(rad.predh$Tarp, holdout$Displaced)
+rad.model.roc.hold <- ROCR::performance(rad.predobh, measure='tpr', x.measure='fpr')
+plot(rad.model.roc.hold, colorize=T, print.cutoffs.at=c(0, 0.1, 0.9, 1.0), main = 'ROC Plot for Radial SVM on Holdout Set')
+lines(x=c(0,1), y=c(0,1), col='grey')
+```
+
+### AUC  
+
+```{r}
+roc(holdout$Displaced, rad.predh$Tarp)$auc
+```
+
+
+## Get confusion matrix with threhold of .80 
+
+```{r}
+rad.predictedvals <- ifelse(rad.predh$Tarp >= .80, 'Tarp', 'Non_Tarp')
+confusionMatrix(factor(rad.predictedvals), factor(holdout$Displaced))
+```
+
+Similar to RF, the SVM model runs into an FPR issue. Too many non-tarps are being flagged as tarps, and this creates a problem for search and rescue. The ROC curve indicates that a high TPR and therefore a low FNR) requires there to be a high FNR. TPR does not stabilize until FPR is larger than 40%.  
+
+
+Threshold: 0.80 
+Accuracy: 0.9908 
+TPR: 0.9951
+FPR: 0.6006
+FNR: 0.0049
+AUC: 0.9572
+gamma = 5
+cost = 100
+Support Vectors: 404
+
+
+
+# Additional Visuals for Report  
+
+Higher hues (above 0.5) are more likely to represent Tarps. This makes sense given that hue is dependent on wavelength, where Blue correlates to a higher wavelength than red or green.  
+
+Due to the cylindrical nature of the HSV color model, the higher hue values appear to be mostly non-tarps. If we shifted the data by .25 hue, that end group of non-tarps would merge in with the lower value non-tarps.  
+
+```{r}
+hsv_df %>% 
+  ggplot(aes(x = hue, y = saturation, color=Displaced)) + 
+  geom_point() +
+  labs(title = 'HSV Color Model: Hue and Saturation Distribution by Displacement Status')
+```
+
+
+
+As expected, in the RGB color model, we expect more dominant Blue intensities in Tarps.  
+
+```{r}
+data %>% 
+  ggplot(aes(x = Green, y = Blue, color=Displaced)) + 
+  geom_point() +
+  labs(title = 'RGB Color Model: Green and Blue Intensity Distribution by Displacement Status')
+```
+
+Tarps being a vibrant blue have a much higher average "value". This makes sense given that "value" is a metric of brightness.  
+
+```{r}
+hsv_df %>% 
+  ggplot(aes(x = Displaced, y=value,  color=Displaced)) + 
+  geom_boxplot() +
+  labs(title = 'HSV Color Model: Value Distribution by Displacement Status')
+```
+
+# EDA Holdout
+
+```{r}
+hsv_holdout[sample(nrow(hsv_holdout), 0.1 * nrow(hsv_holdout)), ] %>% 
+  ggplot(aes(x = hue, y = saturation, color=Displaced)) + 
+  geom_point() +
+  labs(title = 'HSV Color Model: Hue and Saturation Distribution by Displacement Status (Holdout)')
+```
+
+```{r, fig.width=5, fig.height=6}
+PerBluePlotH <- holdout[sample(nrow(holdout), 0.01 * nrow(holdout)), ] %>% 
+  group_by(Displaced) %>%
+  summarize(PerRed = sum(Red)/sum(Red,Blue,Green)*100, PerGreen = sum(Green)/sum(Red,Blue,Green)*100, PerBlue = sum(Blue)/sum(Red,Blue,Green)*100, total = sum(Red,Blue,Green)) %>% 
+  ggplot(aes(x = Displaced, y= PerBlue, fill = 'blue')) +
+  geom_bar(stat = 'identity') +
+  scale_fill_manual(values = "blue") +
+  labs(title = 'Blue Percent of Total Intensity for Tarp vs. Non-Tarp', y= "Percent Blue (%)")
+
+PerRedPlotH <- holdout[sample(nrow(holdout), 0.01 * nrow(holdout)), ] %>% 
+  group_by(Displaced) %>%
+  summarize(PerRed = sum(Red)/sum(Red,Blue,Green)*100, PerGreen = sum(Green)/sum(Red,Blue,Green)*100, PerBlue = sum(Blue)/sum(Red,Blue,Green)*100, total = sum(Red,Blue,Green)) %>% 
+  ggplot(aes(x = Displaced, y= PerRed, fill = 'red')) +
+  geom_bar(stat = 'identity') +
+  scale_fill_manual(values = "red") +
+  labs(title = 'Red Percent of Total Intensity for Tarp vs. Non-Tarp', y= "Percent Red (%)")
+
+PerGreenPlotH <- holdout[sample(nrow(holdout), 0.01 * nrow(holdout)), ] %>% 
+  group_by(Displaced) %>%
+  summarize(PerRed = sum(Red)/sum(Red,Blue,Green)*100, PerGreen = sum(Green)/sum(Red,Blue,Green)*100, PerBlue = sum(Blue)/sum(Red,Blue,Green)*100, total = sum(Red,Blue,Green)) %>% 
+  ggplot(aes(x = Displaced, y= PerGreen, fill = 'green')) +
+  geom_bar(stat = 'identity') +
+  scale_fill_manual(values = "green") +
+  labs(title = 'Green Percent of Total Intensity for Tarp vs. Non-Tarp', y= "Percent Green (%)")
+
+grid.arrange(PerBluePlotH, PerRedPlotH, PerGreenPlotH, nrow = 3, ncol = 1)
+```
+
+
+
+```{r fig.width=8}
+holdout[sample(nrow(holdout), 0.1 * nrow(holdout)), ] %>% 
+  ggplot(aes(x = Green, y = Blue, color=Displaced)) + 
+  geom_point() +
+  labs(title = 'RGB Color Model: Green and Blue Intensity Distribution by Displacement Status (Holdout)')
+```
+
+
+

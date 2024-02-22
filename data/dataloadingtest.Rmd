@@ -1,0 +1,80 @@
+---
+title: "Untitled"
+author: "Rishi"
+date: "2023-07-31"
+output: html_document
+---
+```{r}
+library(tidyverse)
+```
+
+```{r}
+col_names <- c("ID", "X", "Y", "Map_X", "Map_Y", "Lat", "Lon", "Red", "Blue", "Green")
+```
+
+
+## Tarp Data import
+```{r}
+tarp67 <- read.table('orthovnir067_ROI_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+tarp67$Displaced <- 'Tarp'
+```
+
+```{r}
+tarp69 <- read.table('orthovnir069_ROI_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+tarp69$Displaced <- 'Tarp'
+```
+
+```{r}
+tarp78 <- read.table('orthovnir078_ROI_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+tarp78$Displaced <- 'Tarp'
+```
+
+## No Tarps Data import
+```{r}
+notarp67 <- read.table('orthovnir067_ROI_NOT_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+notarp67$Displaced <- 'Non_Tarp'
+```
+
+
+```{r}
+notarp69 <- read.table('orthovnir069_ROI_NOT_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+notarp69$Displaced <- 'Non_Tarp'
+```
+
+```{r}
+notarp78 <- read.table('orthovnir078_ROI_NON_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+notarp78$Displaced <- 'Non_Tarp'
+```
+
+```{r}
+notarp57 <- read.table('orthovnir057_ROI_NON_Blue_Tarps.txt', header = FALSE, skip = 8, col.names = col_names )
+notarp57$Displaced <- 'Non_Tarp'
+```
+
+
+## Create holdout set
+```{r}
+holdout <- rbind(tarp67, notarp67, tarp69, notarp69, tarp78, notarp78, notarp57)
+```
+
+```{r}
+holdout <- select(holdout,c(Red, Blue, Green, Displaced))
+```
+
+```{r}
+holdout$Displaced <- as.factor(holdout$Displaced)
+```
+
+
+# Create hsv holdout set
+```{bash}
+rgb_holdout <- holdout[,1:3]
+hsv_holdout <- rgb2hsv(rgb_holdout$Red, rrgb_holdout$Green, rgb_holdout$Blue)
+hsv_holdout <- as.data.frame(t(hsv_holdout))
+colnames(hsv_holdout) <- c("hue", "saturation", "value")
+hsv_holdout$Displaced <- holdout$Displaced
+```
+
+
+
+

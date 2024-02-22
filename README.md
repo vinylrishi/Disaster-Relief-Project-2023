@@ -1,5 +1,5 @@
 # Disaster-Relief-Project-2023
-## Classification of Blue Tarps from 2010 Haitian Earthquake Crisis
+## Image Classification of Blue Tarps from 2010 Haitian Earthquake Crisis
 
 During the Haitian Earthquake Crisis of 2010, a key method by which to identify survivors was
 by locating manmade shelters. Based on the problem statement, many of these shelters used
